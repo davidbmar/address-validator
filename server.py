@@ -483,6 +483,165 @@ def build_response(
     )
 
 
+# ── Route / Distance Models ────────────────────────────────────────
+
+class RoutePoint(BaseModel):
+    """A point can be an address string OR explicit lat/lng coordinates."""
+    address: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+
+class RouteRequest(BaseModel):
+    origin: RoutePoint
+    destination: RoutePoint
+    waypoints: list[RoutePoint] = []  # optional intermediate stops
+
+
+class RouteLeg(BaseModel):
+    from_address: Optional[str] = None
+    from_lat: float
+    from_lng: float
+    to_address: Optional[str] = None
+    to_lat: float
+    to_lng: float
+    distance_miles: float
+    distance_meters: float
+    duration_minutes: float
+    duration_seconds: float
+
+
+class RouteResponse(BaseModel):
+    success: bool
+    total_distance_miles: float = 0.0
+    total_distance_meters: float = 0.0
+    total_duration_minutes: float = 0.0
+    total_duration_seconds: float = 0.0
+    legs: list[RouteLeg] = []
+    geometry: Optional[dict] = None  # GeoJSON LineString for map rendering
+    error: Optional[str] = None
+
+
+# ── Route Helpers ──────────────────────────────────────────────────
+
+async def resolve_point(point: RoutePoint, country: str, client: httpx.AsyncClient) -> Optional[dict]:
+    """Resolve a RoutePoint to lat/lng. If coordinates given, use them.
+    If address given, geocode it (with fuzzy matching)."""
+    if point.lat is not None and point.lng is not None:
+        # Reverse geocode to get address for display
+        address = None
+        try:
+            result = await geocode_photon(
+                f"{point.lat}, {point.lng}", country, client
+            )
+            if result:
+                address = result.get("display_name")
+        except Exception:
+            pass
+        return {"lat": point.lat, "lng": point.lng, "address": address or f"{point.lat}, {point.lng}"}
+
+    if point.address:
+        # Use the same fuzzy validation logic
+        req = AddressRequest(raw_address=point.address, country=country)
+        match = await validate_address(req)
+        if match.matched:
+            return {"lat": match.lat, "lng": match.lng, "address": match.formatted_address}
+
+    return None
+
+
+async def fetch_osrm_route(coordinates: list[list[float]], client: httpx.AsyncClient) -> Optional[dict]:
+    """Call OSRM for driving route between ordered coordinates.
+    coordinates: [[lng, lat], [lng, lat], ...]
+    """
+    coord_str = ";".join(f"{c[0]},{c[1]}" for c in coordinates)
+    url = f"https://router.project-osrm.org/route/v1/driving/{coord_str}"
+    params = {
+        "overview": "full",
+        "geometries": "geojson",
+        "steps": "false",
+        "annotations": "duration,distance",
+    }
+
+    resp = await client.get(url, params=params)
+    data = resp.json()
+    if data.get("code") != "Ok" or not data.get("routes"):
+        return None
+    return data["routes"][0]
+
+
+# ── Route Endpoint ─────────────────────────────────────────────────
+
+@app.post("/route", response_model=RouteResponse)
+async def calculate_route(req: RouteRequest):
+    """Calculate driving route, distance, and time between points.
+
+    Accepts addresses (with fuzzy matching) or lat/lng coordinates.
+    Returns leg-by-leg distances/times and full route geometry for map rendering.
+
+    Use cases:
+    - Store/HQ to customer address
+    - Driver's current location to next delivery
+    - Multi-stop route planning
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Resolve all points to coordinates
+        all_points = [req.origin] + req.waypoints + [req.destination]
+        resolved = []
+
+        for i, point in enumerate(all_points):
+            result = await resolve_point(point, "us", client)
+            if not result:
+                label = "origin" if i == 0 else ("destination" if i == len(all_points) - 1 else f"waypoint {i}")
+                addr = point.address or f"{point.lat}, {point.lng}"
+                return RouteResponse(
+                    success=False,
+                    error=f"Could not resolve {label}: {addr}",
+                )
+            resolved.append(result)
+
+        # Build coordinate list for OSRM
+        coordinates = [[r["lng"], r["lat"]] for r in resolved]
+
+        # Fetch route from OSRM
+        route = await fetch_osrm_route(coordinates, client)
+        if not route:
+            return RouteResponse(
+                success=False,
+                error="OSRM routing failed — points may be unreachable by road",
+            )
+
+        # Build leg-by-leg breakdown
+        route_legs = route.get("legs", [])
+        legs = []
+        for i, leg in enumerate(route_legs):
+            legs.append(RouteLeg(
+                from_address=resolved[i]["address"],
+                from_lat=resolved[i]["lat"],
+                from_lng=resolved[i]["lng"],
+                to_address=resolved[i + 1]["address"],
+                to_lat=resolved[i + 1]["lat"],
+                to_lng=resolved[i + 1]["lng"],
+                distance_miles=round(leg["distance"] / 1609.344, 1),
+                distance_meters=round(leg["distance"], 0),
+                duration_minutes=round(leg["duration"] / 60, 1),
+                duration_seconds=round(leg["duration"], 0),
+            ))
+
+        total_dist = route["distance"]
+        total_time = route["duration"]
+
+        return RouteResponse(
+            success=True,
+            total_distance_miles=round(total_dist / 1609.344, 1),
+            total_distance_meters=round(total_dist, 0),
+            total_duration_minutes=round(total_time / 60, 1),
+            total_duration_seconds=round(total_time, 0),
+            legs=legs,
+            geometry=route.get("geometry"),
+        )
+
+
 # ── Health Check ───────────────────────────────────────────────────
 
 @app.get("/health")
