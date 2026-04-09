@@ -153,6 +153,12 @@ def _fuzzy_street_match(street_words: list[str], street_type: str = "") -> str |
                 if not candidate or not target:
                     continue
                 score = jellyfish.jaro_winkler_similarity(candidate, target)
+                # Boost score if Metaphone codes match (phonetic equivalence)
+                try:
+                    if jellyfish.metaphone(candidate) == jellyfish.metaphone(target):
+                        score = max(score, 0.85)  # Metaphone match guarantees ≥ 0.85
+                except Exception:
+                    pass
                 if score > best_score:
                     best_score = score
                     best_match = known
