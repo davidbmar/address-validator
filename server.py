@@ -691,6 +691,9 @@ async def validate_address(req: AddressRequest):
     raw = re.sub(r'[.,;!?]+', ' ', raw)
     raw = re.sub(r'\s+', ' ', raw).strip()
 
+    # Strip trailing zip code (5-digit number at end confuses parser)
+    raw = re.sub(r'\s+\d{5}(?:\s*$|\s+$)', '', raw).strip()
+
     # Strip common address preambles FIRST (before number conversion,
     # so "my address is fifteen hundred..." → "fifteen hundred..." → "1500...")
     _PREAMBLES = [
