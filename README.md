@@ -205,6 +205,44 @@ For a plumbing/service dispatch AI:
 | [Nominatim](https://nominatim.openstreetmap.org/) (OpenStreetMap) | Fallback geocoder | 1 req/sec |
 | [OSRM](https://router.project-osrm.org/) (Project OSRM) | Driving routes, distances, times | Public demo server |
 
+## Self-Hosted (Production)
+
+By default the API uses free public servers (Photon, OSRM). For production use, self-host everything with Docker — zero rate limits, zero external dependencies.
+
+### One-time setup
+
+```bash
+# 1. Download and preprocess US road data (~8GB download, takes 10-20 min)
+./setup-osrm.sh
+
+# 2. Start all services
+docker-compose up -d
+```
+
+This starts three containers:
+- **Photon** (port 2322) — geocoder with US address data
+- **OSRM** (port 5000) — driving route engine with US road network
+- **Address Validator API** (port 8100) — your app, auto-configured to use the local services
+
+### Quick test with a single state
+
+For faster setup, edit `setup-osrm.sh` and swap the URL for a single state extract (e.g., Texas is ~500MB instead of ~8GB).
+
+### Local dev (no Docker)
+
+Without Docker, the API falls back to the free public servers automatically:
+
+```bash
+pip install -r requirements.txt
+python server.py
+```
+
+Or point to custom endpoints:
+
+```bash
+PHOTON_URL=http://my-photon:2322 OSRM_URL=http://my-osrm:5000 python server.py
+```
+
 ## Limitations
 
 - **US addresses only** (configurable via `country` parameter)

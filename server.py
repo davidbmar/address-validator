@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import os
 import re
 import time
 from itertools import product
@@ -28,6 +29,11 @@ from pydantic import BaseModel
 
 
 app = FastAPI(title="Address Validator", version="0.1.0")
+
+# ── Configurable service URLs ─────────────────────────────────────
+# Default to public servers for local dev; override via env vars for self-hosted.
+PHOTON_URL = os.environ.get("PHOTON_URL", "https://photon.komoot.io")
+OSRM_URL = os.environ.get("OSRM_URL", "https://router.project-osrm.org")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -320,7 +326,7 @@ async def geocode_photon(query: str, country: str, client: httpx.AsyncClient) ->
 
     try:
         resp = await client.get(
-            "https://photon.komoot.io/api/",
+            f"{PHOTON_URL}/api/",
             params=params,
             headers={"User-Agent": "AddressValidator/0.1"},
         )
@@ -555,7 +561,7 @@ async def fetch_osrm_route(coordinates: list[list[float]], client: httpx.AsyncCl
     coordinates: [[lng, lat], [lng, lat], ...]
     """
     coord_str = ";".join(f"{c[0]},{c[1]}" for c in coordinates)
-    url = f"https://router.project-osrm.org/route/v1/driving/{coord_str}"
+    url = f"{OSRM_URL}/route/v1/driving/{coord_str}"
     params = {
         "overview": "full",
         "geometries": "geojson",
