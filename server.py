@@ -140,8 +140,15 @@ def _fuzzy_street_match(street_words: list[str], street_type: str = "") -> str |
         known_name = " ".join(known_name_parts)
         known_joined = "".join(known_name_parts)
 
-        # Try matching against raw, joined, and individual-word combos
-        for candidate in [raw, joined]:
+        # Try matching against raw, joined, and individual words
+        candidates = [raw, joined]
+        # Also try each individual street word (handles "flugerville loop" where
+        # "flugerville" alone matches "pflugerville" much better)
+        for w in street_words:
+            if len(w) >= 4:
+                candidates.append(w)
+
+        for candidate in candidates:
             for target in [known_name, known_joined]:
                 if not candidate or not target:
                     continue
