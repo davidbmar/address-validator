@@ -549,12 +549,51 @@ def _spoken_number_to_digits(text: str) -> str:
     return text
 
 
+def _ordinals_to_numbers(text: str) -> str:
+    """Convert spoken ordinals to numeric ordinals in address text.
+
+    "west sixth street" → "west 6th street"
+    "east forty second street" → "east 42nd street"
+    "south first street" → "south 1st street"
+    """
+    ORDINALS = {
+        "first": "1st", "second": "2nd", "third": "3rd", "fourth": "4th",
+        "fifth": "5th", "sixth": "6th", "seventh": "7th", "eighth": "8th",
+        "ninth": "9th", "tenth": "10th", "eleventh": "11th", "twelfth": "12th",
+        "thirteenth": "13th", "fourteenth": "14th", "fifteenth": "15th",
+        "sixteenth": "16th", "seventeenth": "17th", "eighteenth": "18th",
+        "nineteenth": "19th", "twentieth": "20th",
+        "twenty first": "21st", "twenty second": "22nd", "twenty third": "23rd",
+        "twenty fourth": "24th", "twenty fifth": "25th", "twenty sixth": "26th",
+        "twenty seventh": "27th", "twenty eighth": "28th", "twenty ninth": "29th",
+        "thirtieth": "30th",
+        "thirty first": "31st", "thirty second": "32nd", "thirty third": "33rd",
+        "thirty fourth": "34th", "thirty fifth": "35th", "thirty sixth": "36th",
+        "thirty seventh": "37th", "thirty eighth": "38th", "thirty ninth": "39th",
+        "fortieth": "40th",
+        "forty first": "41st", "forty second": "42nd", "forty third": "43rd",
+        "forty fourth": "44th", "forty fifth": "45th", "forty sixth": "46th",
+        "forty seventh": "47th", "forty eighth": "48th", "forty ninth": "49th",
+        "fiftieth": "50th",
+        "fifty first": "51st", "fifty second": "52nd", "fifty third": "53rd",
+        "fifty fourth": "54th", "fifty fifth": "55th",
+    }
+    result = text.lower()
+    # Try two-word ordinals first (longer match wins)
+    for spoken, numeric in sorted(ORDINALS.items(), key=lambda x: -len(x[0])):
+        if spoken in result:
+            result = result.replace(spoken, numeric, 1)
+            break  # Only convert one ordinal per address
+    return result
+
+
 @app.post("/validate-address", response_model=AddressMatch)
 async def validate_address(req: AddressRequest):
     raw = req.raw_address.strip()
 
-    # Pre-process: convert spoken numbers to digits
+    # Pre-process: convert spoken numbers and ordinals to digits
     raw = _spoken_number_to_digits(raw)
+    raw = _ordinals_to_numbers(raw)
 
     filter_city = req.city
     filter_state = req.state
