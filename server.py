@@ -691,6 +691,25 @@ async def validate_address(req: AddressRequest):
     # Strip "in" before city name: "red river street in austin" → "red river street austin"
     raw = re.sub(r'\b(in|near)\s+(austin|texas|tx)\b', r'\2', raw, flags=re.IGNORECASE)
 
+    # Strip conversational noise after street type:
+    # "manor road you know the one by the airport" → "manor road"
+    _STREET_TYPE_RE = re.compile(
+        r'\b(street|st|road|rd|drive|dr|lane|ln|boulevard|blvd|avenue|ave|'
+        r'way|court|ct|circle|cir|place|pl|trail|loop|parkway|expressway)\b',
+        re.IGNORECASE
+    )
+    _NOISE_WORDS = {"you", "know", "the", "one", "by", "its", "that", "right", "just", "over", "near", "off", "from"}
+    m = _STREET_TYPE_RE.search(raw)
+    if m:
+        after_type = raw[m.end():].strip().split()
+        # If words after street type start with noise, truncate
+        if after_type and after_type[0].lower() in _NOISE_WORDS:
+            raw = raw[:m.end()].strip()
+            # But keep city/state if they follow: re-append known city/state tokens
+            for token in after_type:
+                if token.lower() in {"austin", "texas", "tx"}:
+                    raw += " " + token
+
     filter_city = req.city
     filter_state = req.state
 
