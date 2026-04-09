@@ -691,12 +691,29 @@ async def validate_address(req: AddressRequest):
     raw = _spoken_number_to_digits(raw)
     raw = _ordinals_to_numbers(raw)
 
+    # Strip common address preambles first
+    _PREAMBLES = [
+        r"^(?:my |the |our )?address is\s+",
+        r"^(?:we|i|i'm|we're|we are|i am) (?:at|on|live at|located at)\s+",
+        r"^(?:it's|its|that's|that is) (?:at|on)?\s*",
+        r"^(?:send (?:them|someone|it) to)\s+",
+    ]
+    for pat in _PREAMBLES:
+        raw = re.sub(pat, "", raw, flags=re.IGNORECASE).strip()
+
     # Strip common STT filler words from the start
     _FILLERS = {"um", "uh", "so", "yeah", "yes", "its", "it's", "like", "well", "ok", "okay", "at", "on"}
     words = raw.split()
     while words and words[0].lower().rstrip(",") in _FILLERS:
         words.pop(0)
     raw = " ".join(words)
+    # Split merged street-type words: "Holldrive" → "Hall Drive", "Hallstreet" → "Hall Street"
+    _MERGED_TYPES = re.compile(
+        r'(\w{2,}?)(drive|street|road|lane|boulevard|avenue|way|court|place|trail|loop)(?:\b|$)',
+        re.IGNORECASE
+    )
+    raw = _MERGED_TYPES.sub(r'\1 \2', raw)
+
     # Strip "in" before city name: "red river street in austin" → "red river street austin"
     raw = re.sub(r'\b(in|near)\s+(austin|texas|tx)\b', r'\2', raw, flags=re.IGNORECASE)
 
