@@ -103,6 +103,58 @@ CONSONANT_SWAPS = {
     "w": ["w", "wh"],
 }
 
+# ── Local street name dictionary (for fuzzy fallback) ──────────────
+# When geocoder variants all fail, fuzzy-match the street words against
+# known street names. Loaded from austin_streets.json if present.
+_STREET_DICT: list[str] = []
+_STREET_DICT_PATH = os.path.join(os.path.dirname(__file__), "austin_streets.json")
+if os.path.exists(_STREET_DICT_PATH):
+    import json as _json
+    with open(_STREET_DICT_PATH) as _f:
+        _STREET_DICT = _json.load(_f)
+
+
+def _fuzzy_street_match(street_words: list[str], street_type: str = "") -> str | None:
+    """Find the closest known street name using Jaro-Winkler similarity.
+
+    Tries the raw words, the joined form, and vowel/consonant variants
+    against the street dictionary. Returns the best match above threshold.
+    """
+    if not _STREET_DICT:
+        return None
+
+    raw = " ".join(street_words).lower()
+    joined = "".join(street_words).lower()
+
+    best_score = 0.0
+    best_match = None
+    threshold = 0.80  # Jaro-Winkler threshold (0.80 catches "all torf"→"oltorf" at 0.819)
+
+    for known in _STREET_DICT:
+        # Extract just the street name (without type like "Drive", "Street")
+        known_parts = known.lower().split()
+        known_types = {"drive","dr","street","st","road","rd","lane","ln","boulevard",
+                       "blvd","avenue","ave","way","court","ct","circle","cir","place",
+                       "pl","trail","loop","parkway","expressway","park"}
+        known_name_parts = [p for p in known_parts if p not in known_types]
+        known_name = " ".join(known_name_parts)
+        known_joined = "".join(known_name_parts)
+
+        # Try matching against raw, joined, and individual-word combos
+        for candidate in [raw, joined]:
+            for target in [known_name, known_joined]:
+                if not candidate or not target:
+                    continue
+                score = jellyfish.jaro_winkler_similarity(candidate, target)
+                if score > best_score:
+                    best_score = score
+                    best_match = known
+
+    if best_score >= threshold and best_match:
+        return best_match
+    return None
+
+
 # Common street type abbreviations
 STREET_TYPES = {
     "drive": ["dr", "drive", "drv"],
@@ -396,7 +448,8 @@ async def geocode_photon(
                 continue
 
             # Must have a street-level result (not just city)
-            if filter_city_l and not props.get("street") and not props.get("housenumber"):
+            # Photon uses "street" for address results and "name" for street-level results
+            if filter_city_l and not props.get("street") and not props.get("housenumber") and not props.get("name"):
                 continue
 
             # Convert to Nominatim-like format
@@ -405,7 +458,7 @@ async def geocode_photon(
                 "lon": str(coords[0]),
                 "display_name": ", ".join(filter(None, [
                     props.get("housenumber", ""),
-                    props.get("street", ""),
+                    props.get("street", "") or props.get("name", ""),
                     props.get("city", "") or props.get("town", "") or props.get("village", ""),
                     props.get("state", ""),
                     props.get("postcode", ""),
@@ -413,7 +466,7 @@ async def geocode_photon(
                 ])),
             "address": {
                 "house_number": props.get("housenumber"),
-                "road": props.get("street"),
+                "road": props.get("street") or props.get("name"),
                 "city": props.get("city") or props.get("town") or props.get("village"),
                 "county": props.get("county"),
                 "state": props.get("state"),
@@ -633,16 +686,35 @@ async def validate_address(req: AddressRequest):
         if not filter_state and parts.get("state"):
             filter_state = parts["state"]
 
-    # Step 1: Try the exact input with both geocoders
+    # Step 0: Dictionary pre-correction — if the street name fuzzy-matches
+    # a known street, rewrite the query BEFORE geocoding. This prevents the
+    # geocoder from confidently returning the wrong street.
+    parts_pre = parse_address_parts(raw)
+    dict_corrected_query = None
+    if parts_pre.get("street_words"):
+        dict_match = _fuzzy_street_match(parts_pre["street_words"], parts_pre.get("street_type", ""))
+        if dict_match:
+            number = parts_pre.get("number", "")
+            city_part = parts_pre.get("city") or filter_city or ""
+            state_part = parts_pre.get("state") or filter_state or ""
+            dict_corrected_query = f"{number} {dict_match} {city_part} {state_part}".strip()
+
+    # Step 1: Try the dictionary-corrected query first (if available), then raw
     async with httpx.AsyncClient(timeout=10) as client:
+        if dict_corrected_query:
+            result = await geocode_photon(dict_corrected_query, req.country, client,
+                                          filter_city=filter_city, filter_state=filter_state)
+            if result:
+                return build_response(raw, dict_corrected_query, result, "high", 1)
+
         result = await geocode_photon(raw, req.country, client,
                                       filter_city=filter_city, filter_state=filter_state)
         if result:
-            return build_response(raw, raw, result, "exact", 1)
+            return build_response(raw, raw, result, "exact", 2)
 
         result = await geocode_nominatim(raw, req.country, client)
         if result:
-            return build_response(raw, raw, result, "exact", 2)
+            return build_response(raw, raw, result, "exact", 3)
 
         # Step 2: Parse and generate variants
         parts = parse_address_parts(raw)
@@ -706,6 +778,29 @@ async def validate_address(req: AddressRequest):
                 if filter_city and not addr.get("road") and not addr.get("house_number"):
                     continue
                 return build_response(raw, q, result, "medium", tried)
+
+        # Step 5: Local street dictionary fuzzy fallback
+        # When all geocoder queries fail, fuzzy-match against known street names
+        if parts.get("street_words"):
+            dict_match = _fuzzy_street_match(parts["street_words"], parts.get("street_type", ""))
+            if dict_match:
+                # Rebuild the query with the dictionary street name
+                number = parts.get("number", "")
+                city = parts.get("city") or filter_city or ""
+                state = parts.get("state") or filter_state or ""
+                dict_query = f"{number} {dict_match} {city} {state}".strip()
+                tried += 1
+
+                result = await geocode_photon(dict_query, req.country, client,
+                                              filter_city=filter_city, filter_state=filter_state)
+                if result:
+                    return build_response(raw, dict_query, result, "medium", tried)
+
+                # Try Nominatim too
+                tried += 1
+                result = await geocode_nominatim(dict_query, req.country, client)
+                if result:
+                    return build_response(raw, dict_query, result, "medium", tried)
 
         return AddressMatch(
             matched=False,
