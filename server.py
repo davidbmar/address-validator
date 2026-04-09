@@ -675,6 +675,13 @@ async def validate_address(req: AddressRequest):
     raw = _spoken_number_to_digits(raw)
     raw = _ordinals_to_numbers(raw)
 
+    # Strip common STT filler words from the start
+    _FILLERS = {"um", "uh", "so", "yeah", "yes", "its", "it's", "like", "well", "ok", "okay"}
+    words = raw.split()
+    while words and words[0].lower().rstrip(",") in _FILLERS:
+        words.pop(0)
+    raw = " ".join(words)
+
     filter_city = req.city
     filter_state = req.state
 
