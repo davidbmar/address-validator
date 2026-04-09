@@ -694,6 +694,14 @@ async def validate_address(req: AddressRequest):
     # Strip trailing zip code (5-digit number at end confuses parser)
     raw = re.sub(r'\s+\d{5}(?:\s*$|\s+$)', '', raw).strip()
 
+    # Ensure trailing city/state tokens are separated from street words
+    # "south lamar boulevard austin" → parser needs to detect "austin" as city
+    # Append state if city is present without state, to help the parser
+    _KNOWN_CITIES = {"austin"}
+    words = raw.lower().split()
+    if words and words[-1] in _KNOWN_CITIES and (len(words) < 2 or words[-2] not in {"texas", "tx"}):
+        raw = raw + " Texas"
+
     # Strip common address preambles FIRST (before number conversion,
     # so "my address is fifteen hundred..." → "fifteen hundred..." → "1500...")
     _PREAMBLES = [
