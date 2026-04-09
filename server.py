@@ -694,10 +694,18 @@ async def validate_address(req: AddressRequest):
     if parts_pre.get("street_words"):
         dict_match = _fuzzy_street_match(parts_pre["street_words"], parts_pre.get("street_type", ""))
         if dict_match:
-            number = parts_pre.get("number", "")
-            city_part = parts_pre.get("city") or filter_city or ""
-            state_part = parts_pre.get("state") or filter_state or ""
-            dict_corrected_query = f"{number} {dict_match} {city_part} {state_part}".strip()
+            # Only use dictionary if it actually corrects something.
+            # Compare the raw street words to dictionary name words.
+            # Skip ONLY if the words themselves are identical (same count, same spelling).
+            raw_words_lower = [w.lower() for w in parts_pre["street_words"]]
+            generic = {"street","st","road","rd","drive","dr","lane","ln","boulevard",
+                       "blvd","avenue","ave","way","court","ct","loop","parkway","expressway","trail","park"}
+            dict_name_words = [w.lower() for w in dict_match.split() if w.lower() not in generic]
+            if raw_words_lower != dict_name_words:  # Different words or word count = needs correction
+                number = parts_pre.get("number", "")
+                city_part = parts_pre.get("city") or filter_city or ""
+                state_part = parts_pre.get("state") or filter_state or ""
+                dict_corrected_query = f"{number} {dict_match} {city_part} {state_part}".strip()
 
     # Step 1: Try the dictionary-corrected query first (if available), then raw
     async with httpx.AsyncClient(timeout=10) as client:
