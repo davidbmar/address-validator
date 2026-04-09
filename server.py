@@ -707,9 +707,10 @@ async def validate_address(req: AddressRequest):
     while words and words[0].lower().rstrip(",") in _FILLERS:
         words.pop(0)
     raw = " ".join(words)
-    # Split merged street-type words: "Holldrive" → "Hall Drive", "Hallstreet" → "Hall Street"
+    # Split merged street-type words: "Holldrive" → "Holl Drive", "Hallstreet" → "Hall Street"
+    # Only split on unambiguous types (not "way" which appears in parkway/highway/driveway)
     _MERGED_TYPES = re.compile(
-        r'(\w{2,}?)(drive|street|road|lane|boulevard|avenue|way|court|place|trail|loop)(?:\b|$)',
+        r'(\w{2,}?)(drive|street|road|lane|boulevard|avenue|court|place|trail|loop)(?:\b|$)',
         re.IGNORECASE
     )
     raw = _MERGED_TYPES.sub(r'\1 \2', raw)
