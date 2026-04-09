@@ -687,6 +687,10 @@ def _ordinals_to_numbers(text: str) -> str:
 async def validate_address(req: AddressRequest):
     raw = req.raw_address.strip()
 
+    # Strip STT punctuation that breaks parsing (commas, periods, semicolons)
+    raw = re.sub(r'[.,;!?]+', ' ', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
+
     # Strip common address preambles FIRST (before number conversion,
     # so "my address is fifteen hundred..." → "fifteen hundred..." → "1500...")
     _PREAMBLES = [
