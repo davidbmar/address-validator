@@ -661,6 +661,25 @@ async def validate_address(req: AddressRequest):
                     confidence = "high" if idx < 10 else "medium"
                     return build_response(raw, batch[i], result, confidence, tried)
 
+        # Step 4: Nominatim fallback for top variants (different data coverage)
+        top_variants = unique_queries[:3]
+        for q in top_variants:
+            tried += 1
+            result = await geocode_nominatim(q, req.country, client)
+            if result:
+                # Apply city/state filter manually for Nominatim results
+                addr = result.get("address", {})
+                res_city = (addr.get("city", "") or addr.get("town", "") or addr.get("village", "")).lower()
+                res_state = addr.get("state", "").lower()
+                if filter_city and filter_city.lower() not in res_city and res_city not in filter_city.lower():
+                    continue
+                if filter_state and filter_state.lower() not in res_state and res_state not in filter_state.lower():
+                    continue
+                # Must have street-level result
+                if filter_city and not addr.get("road") and not addr.get("house_number"):
+                    continue
+                return build_response(raw, q, result, "medium", tried)
+
         return AddressMatch(
             matched=False,
             confidence="low",
