@@ -683,11 +683,13 @@ async def validate_address(req: AddressRequest):
     raw = _ordinals_to_numbers(raw)
 
     # Strip common STT filler words from the start
-    _FILLERS = {"um", "uh", "so", "yeah", "yes", "its", "it's", "like", "well", "ok", "okay"}
+    _FILLERS = {"um", "uh", "so", "yeah", "yes", "its", "it's", "like", "well", "ok", "okay", "at", "on"}
     words = raw.split()
     while words and words[0].lower().rstrip(",") in _FILLERS:
         words.pop(0)
     raw = " ".join(words)
+    # Strip "in" before city name: "red river street in austin" → "red river street austin"
+    raw = re.sub(r'\b(in|near)\s+(austin|texas|tx)\b', r'\2', raw, flags=re.IGNORECASE)
 
     filter_city = req.city
     filter_state = req.state
