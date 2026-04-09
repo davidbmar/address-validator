@@ -51,6 +51,8 @@ NOMINATIM_DELAY = 1.1  # seconds between calls
 class AddressRequest(BaseModel):
     raw_address: str
     country: str = "us"
+    city: str = ""      # Optional: filter results to this city (e.g., "Austin")
+    state: str = ""     # Optional: filter results to this state (e.g., "Texas")
 
 
 class AddressMatch(BaseModel):
@@ -317,10 +319,17 @@ def score_variant(variant: str, original_parts: dict) -> float:
 
 # ── Geocoding ──────────────────────────────────────────────────────
 
-async def geocode_photon(query: str, country: str, client: httpx.AsyncClient) -> Optional[dict]:
+async def geocode_photon(
+    query: str, country: str, client: httpx.AsyncClient,
+    filter_city: str = "", filter_state: str = "",
+) -> Optional[dict]:
     """Call Photon geocoder (Komoot) — no rate limit, fast.
-    Returns result in Nominatim-compatible format."""
-    params = {"q": query, "limit": "1"}
+    Returns result in Nominatim-compatible format.
+    When filter_city/filter_state are set, requests multiple results
+    and picks the first one matching the city/state."""
+    # Request more results when filtering by city so we can pick the right one
+    limit = 5 if (filter_city or filter_state) else 1
+    params = {"q": query, "limit": str(limit)}
     if country == "us":
         params["lang"] = "en"
 
@@ -335,28 +344,46 @@ async def geocode_photon(query: str, country: str, client: httpx.AsyncClient) ->
         if not features:
             return None
 
-        feat = features[0]
-        props = feat.get("properties", {})
-        coords = feat.get("geometry", {}).get("coordinates", [])
-        if not coords or len(coords) < 2:
-            return None
+        # Score and filter candidates
+        filter_city_l = filter_city.lower().strip()
+        filter_state_l = filter_state.lower().strip()
 
-        # Filter to correct country
-        if country and props.get("countrycode", "").lower() != country.lower():
-            return None
+        for feat in features:
+            props = feat.get("properties", {})
+            coords = feat.get("geometry", {}).get("coordinates", [])
+            if not coords or len(coords) < 2:
+                continue
 
-        # Convert to Nominatim-like format
-        return {
-            "lat": str(coords[1]),
-            "lon": str(coords[0]),
-            "display_name": ", ".join(filter(None, [
-                props.get("housenumber", ""),
-                props.get("street", ""),
-                props.get("city", "") or props.get("town", "") or props.get("village", ""),
-                props.get("state", ""),
-                props.get("postcode", ""),
-                props.get("country", ""),
-            ])),
+            # Filter to correct country
+            if country and props.get("countrycode", "").lower() != country.lower():
+                continue
+
+            # Filter by city if specified
+            result_city = (props.get("city", "") or props.get("town", "") or props.get("village", "")).lower()
+            if filter_city_l and filter_city_l not in result_city and result_city not in filter_city_l:
+                continue
+
+            # Filter by state if specified
+            result_state = props.get("state", "").lower()
+            if filter_state_l and filter_state_l not in result_state and result_state not in filter_state_l:
+                continue
+
+            # Must have a street-level result (not just city)
+            if filter_city_l and not props.get("street") and not props.get("housenumber"):
+                continue
+
+            # Convert to Nominatim-like format
+            return {
+                "lat": str(coords[1]),
+                "lon": str(coords[0]),
+                "display_name": ", ".join(filter(None, [
+                    props.get("housenumber", ""),
+                    props.get("street", ""),
+                    props.get("city", "") or props.get("town", "") or props.get("village", ""),
+                    props.get("state", ""),
+                    props.get("postcode", ""),
+                    props.get("country", ""),
+                ])),
             "address": {
                 "house_number": props.get("housenumber"),
                 "road": props.get("street"),
@@ -402,13 +429,148 @@ async def geocode_nominatim(query: str, country: str, client: httpx.AsyncClient)
 
 # ── Main Endpoint ──────────────────────────────────────────────────
 
+def _spoken_number_to_digits(text: str) -> str:
+    """Convert spoken numbers to digits in address text.
+
+    Handles patterns like:
+      "fifteen oh three" → "1503"
+      "twenty nine oh one" → "2901"
+      "forty four seventy seven" → "4477"
+      "eleven hundred" → "1100"
+      "twelve twenty one" → "1221"
+      "eighty eight sixty eight" → "8868"
+      "one hundred" → "100"
+      "three hundred" → "300"
+      "five twelve" → "512"
+
+    Only converts the leading number portion — leaves the rest of the address intact.
+    """
+    ONES = {
+        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+        "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+        "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19,
+    }
+    TENS = {
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+        "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    }
+
+    tokens = text.lower().split()
+    if not tokens:
+        return text
+
+    # Try to consume number tokens from the front
+    i = 0
+    number_parts = []
+
+    def _parse_small_number(idx):
+        """Parse a 1-2 digit number starting at idx. Returns (value, tokens_consumed)."""
+        if idx >= len(tokens):
+            return None, 0
+        t = tokens[idx]
+        # "oh" = 0 (as in "oh one" = 01)
+        if t == "oh" and idx + 1 < len(tokens) and tokens[idx + 1] in ONES:
+            return ONES[tokens[idx + 1]], 2
+        if t in ONES:
+            return ONES[t], 1
+        if t in TENS:
+            # "twenty" alone or "twenty one"
+            if idx + 1 < len(tokens) and tokens[idx + 1] in ONES and ONES[tokens[idx + 1]] < 10:
+                return TENS[t] + ONES[tokens[idx + 1]], 2
+            return TENS[t], 1
+        return None, 0
+
+    def _try_parse_number(idx):
+        """Try to parse a full house number starting at idx.
+        Returns (digit_string, tokens_consumed) or (None, 0)."""
+        if idx >= len(tokens):
+            return None, 0
+
+        total_consumed = 0
+        parts = []
+
+        # Pattern 1: "N hundred" (e.g., "eleven hundred" = 1100, "three hundred" = 300)
+        val, consumed = _parse_small_number(idx)
+        if val is not None and consumed > 0:
+            next_idx = idx + consumed
+            if next_idx < len(tokens) and tokens[next_idx] == "hundred":
+                hundred_val = val * 100
+                next_idx += 1
+                total_consumed = next_idx - idx
+                # Check for trailing small number: "eleven hundred fifteen" = 1115
+                trail_val, trail_consumed = _parse_small_number(next_idx)
+                if trail_val is not None and trail_val < 100:
+                    return str(hundred_val + trail_val), total_consumed + trail_consumed
+                return str(hundred_val), total_consumed
+
+            # Pattern 2: "N thousand N" (e.g., "eleven thousand four hundred" = 11400)
+            if next_idx < len(tokens) and tokens[next_idx] == "thousand":
+                thousand_val = val * 1000
+                next_idx += 1
+                total_consumed = next_idx - idx
+                trail_val, trail_consumed = _parse_small_number(next_idx)
+                if trail_val is not None:
+                    # Could be "eleven thousand four hundred"
+                    trail_next = next_idx + trail_consumed
+                    if trail_next < len(tokens) and tokens[trail_next] == "hundred":
+                        return str(thousand_val + trail_val * 100), total_consumed + trail_consumed + 1
+                    return str(thousand_val + trail_val), total_consumed + trail_consumed
+                return str(thousand_val), total_consumed
+
+            # Pattern 3: Two-part number (e.g., "forty four seventy seven" = 4477, "twelve twenty one" = 1221)
+            second_val, second_consumed = _parse_small_number(next_idx)
+            if second_val is not None and second_consumed > 0:
+                # "twelve twenty one" → 12 * 100 + 21 = 1221
+                # "forty four seventy seven" → 44 * 100 + 77 = 4477
+                # "five twelve" → 5 * 100 + 12 = 512
+                combined = val * 100 + second_val
+                if combined > 99:  # Only if it makes a plausible house number
+                    return str(combined), consumed + second_consumed
+
+            # Pattern 4: "N oh N" (e.g., "twenty nine oh one" = 2901)
+            if next_idx < len(tokens) and tokens[next_idx] == "oh":
+                oh_next = next_idx + 1
+                if oh_next < len(tokens) and tokens[oh_next] in ONES:
+                    return str(val * 100 + ONES[tokens[oh_next]]), consumed + 2
+
+            # Single number at the start — only valid if > 0
+            if val > 0:
+                return str(val), consumed
+
+        return None, 0
+
+    digit_str, consumed = _try_parse_number(0)
+    if digit_str and consumed > 0:
+        remaining = " ".join(tokens[consumed:])
+        return f"{digit_str} {remaining}".strip()
+
+    return text
+
+
 @app.post("/validate-address", response_model=AddressMatch)
 async def validate_address(req: AddressRequest):
     raw = req.raw_address.strip()
 
+    # Pre-process: convert spoken numbers to digits
+    raw = _spoken_number_to_digits(raw)
+
+    filter_city = req.city
+    filter_state = req.state
+
+    # Auto-detect city/state from the raw address if not explicitly provided
+    if not filter_city or not filter_state:
+        parts = parse_address_parts(raw)
+        if not filter_city and parts.get("city"):
+            filter_city = parts["city"]
+        if not filter_state and parts.get("state"):
+            filter_state = parts["state"]
+
     # Step 1: Try the exact input with both geocoders
     async with httpx.AsyncClient(timeout=10) as client:
-        result = await geocode_photon(raw, req.country, client)
+        result = await geocode_photon(raw, req.country, client,
+                                      filter_city=filter_city, filter_state=filter_state)
         if result:
             return build_response(raw, raw, result, "exact", 1)
 
@@ -448,7 +610,9 @@ async def validate_address(req: AddressRequest):
 
         for batch_start in range(0, max_tries, batch_size):
             batch = unique_queries[batch_start:batch_start + batch_size]
-            tasks = [geocode_photon(q, req.country, client) for q in batch]
+            tasks = [geocode_photon(q, req.country, client,
+                                    filter_city=filter_city, filter_state=filter_state)
+                     for q in batch]
             results = await asyncio.gather(*tasks)
 
             for i, result in enumerate(results):
