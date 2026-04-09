@@ -687,11 +687,8 @@ def _ordinals_to_numbers(text: str) -> str:
 async def validate_address(req: AddressRequest):
     raw = req.raw_address.strip()
 
-    # Pre-process: convert spoken numbers and ordinals to digits
-    raw = _spoken_number_to_digits(raw)
-    raw = _ordinals_to_numbers(raw)
-
-    # Strip common address preambles first
+    # Strip common address preambles FIRST (before number conversion,
+    # so "my address is fifteen hundred..." → "fifteen hundred..." → "1500...")
     _PREAMBLES = [
         r"^(?:my |the |our )?address is\s+",
         r"^(?:we|i|i'm|we're|we are|i am) (?:at|on|live at|located at)\s+",
@@ -700,6 +697,10 @@ async def validate_address(req: AddressRequest):
     ]
     for pat in _PREAMBLES:
         raw = re.sub(pat, "", raw, flags=re.IGNORECASE).strip()
+
+    # Pre-process: convert spoken numbers and ordinals to digits
+    raw = _spoken_number_to_digits(raw)
+    raw = _ordinals_to_numbers(raw)
 
     # Strip common STT filler words from the start
     _FILLERS = {"um", "uh", "so", "yeah", "yes", "its", "it's", "like", "well", "ok", "okay", "at", "on"}
@@ -736,6 +737,22 @@ async def validate_address(req: AddressRequest):
             for token in after_type:
                 if token.lower() in {"austin", "texas", "tx"}:
                     raw += " " + token
+
+    # Strip trailing phone numbers: "...austin and my number is 512 555 1234"
+    raw = re.sub(r'\b(?:and |&)?(?:my |the )?(?:number|phone|cell|callback)\b.*$', '', raw, flags=re.IGNORECASE).strip()
+    # Strip trailing spelled-out zip digits: "...texas seven eight seven four five"
+    _SPOKEN_DIGITS = {"zero","one","two","three","four","five","six","seven","eight","nine","oh"}
+    words = raw.split()
+    # If the last 5+ words are all spoken digits, strip them (likely a zip code)
+    trailing_digit_count = 0
+    for w in reversed(words):
+        if w.lower() in _SPOKEN_DIGITS:
+            trailing_digit_count += 1
+        else:
+            break
+    if trailing_digit_count >= 5:
+        words = words[:-trailing_digit_count]
+        raw = " ".join(words)
 
     filter_city = req.city
     filter_state = req.state
