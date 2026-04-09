@@ -245,6 +245,33 @@ def generate_street_variants(street_words: list[str]) -> list[str]:
                     new_word[pos] = replacement
                 variants.add("".join(new_word))
 
+    # Strategy 5: Consonant substitutions on each word
+    # "duball" → "duval", "flugerville" → "pflugerville"
+    for word in street_words:
+        consonant_positions = [(i, c) for i, c in enumerate(word) if c in CONSONANT_SWAPS]
+        # Limit to 2 consonant positions to avoid combinatorial explosion
+        if consonant_positions and len(consonant_positions) <= 2:
+            swap_options = [CONSONANT_SWAPS[c] for _, c in consonant_positions]
+            for combo in product(*swap_options):
+                new_word = list(word)
+                for (pos, _), replacement in zip(consonant_positions, combo):
+                    new_word[pos:pos + 1] = list(replacement)  # handles "ph" multi-char
+                new_word = "".join(new_word)
+                new_street = [new_word if w == word else w for w in street_words]
+                variants.add(" ".join(new_street))
+
+    # Strategy 6: Consonant swaps on joined form
+    if len(street_words) >= 2:
+        joined_word = "".join(street_words)
+        consonant_positions = [(i, c) for i, c in enumerate(joined_word) if c in CONSONANT_SWAPS]
+        if consonant_positions and len(consonant_positions) <= 2:
+            swap_options = [CONSONANT_SWAPS[c] for _, c in consonant_positions]
+            for combo in product(*swap_options):
+                new_word = list(joined_word)
+                for (pos, _), replacement in zip(consonant_positions, combo):
+                    new_word[pos:pos + 1] = list(replacement)
+                variants.add("".join(new_word))
+
     return list(variants)
 
 
