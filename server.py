@@ -708,7 +708,7 @@ async def validate_address(req: AddressRequest):
         r"^(?:my |the |our )?address is\s+",
         r"^(?:we|i|i'm|we're|we are|i am) (?:at|on|live at|located at)\s+",
         r"^(?:it's|its|that's|that is) (?:at|on)?\s*",
-        r"^(?:send (?:them|someone|it) to)\s+",
+        r"^(?:send (?:them|someone|it|the \w+|a \w+) to)\s+",
     ]
     for pat in _PREAMBLES:
         raw = re.sub(pat, "", raw, flags=re.IGNORECASE).strip()
@@ -741,7 +741,8 @@ async def validate_address(req: AddressRequest):
         r'way|court|ct|circle|cir|place|pl|trail|loop|parkway|expressway)\b',
         re.IGNORECASE
     )
-    _NOISE_WORDS = {"you", "know", "the", "one", "by", "its", "that", "right", "just", "over", "near", "off", "from"}
+    _NOISE_WORDS = {"you", "know", "the", "one", "by", "its", "that", "right", "just", "over", "near", "off", "from",
+                     "unit", "apt", "apartment", "suite", "ste", "bldg", "building", "floor", "number", "num", "#"}
     m = _STREET_TYPE_RE.search(raw)
     if m:
         after_type = raw[m.end():].strip().split()
