@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   # ── OSRM — driving route engine ───────────────────────────────────
-  # Pre-process US road data, then serve routes on port 5000.
+  # Pre-process road data with setup-osrm.sh, then serve routes on port 5000.
   # Data is persisted in ./data/osrm/ so preprocessing only runs once.
   osrm:
     image: osrm/osrm-backend:latest
@@ -11,32 +11,20 @@ services:
       - "5000:5000"
     volumes:
       - ./data/osrm:/data
-    command: osrm-routed --algorithm mld /data/us-latest.osrm
-    restart: unless-stopped
-
-  # ── Photon — geocoder (address lookup) ────────────────────────────
-  # Downloads US geocoding index on first start (~2GB).
-  # Data is persisted in ./data/photon/ so download only runs once.
-  photon:
-    image: komoot/photon:latest
-    container_name: photon
-    ports:
-      - "2322:2322"
-    volumes:
-      - ./data/photon:/photon/photon_data
-    command: -country-codes us
+    command: osrm-routed --algorithm mld /data/austin.osrm
     restart: unless-stopped
 
   # ── Address Validator API ─────────────────────────────────────────
+  # Photon geocoder uses the free public API (no rate limit, no key needed).
+  # OSRM routes through our self-hosted instance above.
   app:
     build: .
     container_name: address-validator
     ports:
       - "8100:8100"
     environment:
-      - PHOTON_URL=http://photon:2322
+      - PHOTON_URL=https://photon.komoot.io
       - OSRM_URL=http://osrm:5000
     depends_on:
-      - photon
       - osrm
     restart: unless-stopped
