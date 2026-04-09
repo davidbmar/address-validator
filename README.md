@@ -1,16 +1,16 @@
-# Address Validator & Route Calculator API
+# USPS Address Validator & Route Calculator API
 
-A lightweight FastAPI service that validates messy or voice-transcribed addresses and calculates driving routes, distances, and travel times using OpenStreetMap data. No API keys required.
+A lightweight FastAPI service that validates messy or voice-transcribed US addresses against USPS standards and calculates driving routes, distances, and travel times using OpenStreetMap data. No API keys required.
 
 ## The Problem
 
-Voice-to-text often garbles addresses:
+Voice-to-text often garbles addresses, and raw user input rarely matches USPS-standardized formatting:
 
-| Voice heard | Actual address |
-|-------------|---------------|
+| Voice heard | USPS-standardized address |
+|-------------|--------------------------|
 | "2711 brian hall drive austin tx" | 2711 Bryonhall Drive, Austin, TX 78745 |
 
-Standard geocoders fail on these because they do exact matching. This service generates phonetic variants and tries them until it finds a real address. Once validated, you can calculate drive times and distances to any address — from a store, HQ, or a driver's current location.
+Standard geocoders fail on these because they do exact matching. This service generates phonetic variants and tries them until it finds a real, USPS-compatible address. Once validated, you can calculate drive times and distances to any address — from a store, HQ, or a driver's current location.
 
 ## How It Works
 
@@ -19,7 +19,7 @@ Standard geocoders fail on these because they do exact matching. This service ge
 2. **Try exact match** against Photon (Komoot) geocoder
 3. If no match, **generate ~40 phonetic variants** — join/split words, swap vowels (i↔y, a↔o, etc.)
 4. **Fire variants concurrently** at Photon (no rate limit)
-5. **Return** the first hit with structured address data + coordinates
+5. **Return** the first hit with structured, USPS-formatted address data + coordinates
 
 ### Route Calculation
 1. **Resolve** origin and destination — accepts addresses (with fuzzy matching) or lat/lng coordinates
@@ -39,7 +39,7 @@ Server runs on `http://localhost:8100`.
 
 ### `POST /validate-address`
 
-Validate and resolve a raw address string.
+Validate and resolve a raw address string to a USPS-standardized format.
 
 ```bash
 curl -X POST http://localhost:8100/validate-address \
@@ -73,7 +73,7 @@ Response:
 | `matched` | Whether a valid address was found |
 | `confidence` | `"exact"`, `"high"`, `"medium"`, or `"low"` |
 | `matched_query` | The variant that matched (shows what transformation worked) |
-| `formatted_address` | Full standardized address string |
+| `formatted_address` | Full USPS-standardized address string |
 | `lat` / `lng` | Coordinates |
 | `variants_tried` | Number of geocoding attempts made |
 
@@ -105,7 +105,7 @@ curl -X POST http://localhost:8100/route \
   }'
 ```
 
-#### Example 3: Multi-stop route (HQ → job site A → job site B → return)
+#### Example 3: Multi-stop route (HQ -> job site A -> job site B -> return)
 
 ```bash
 curl -X POST http://localhost:8100/route \
@@ -177,16 +177,16 @@ For a plumbing/service dispatch AI:
 
 ```
 1. Customer calls, gives address via phone
-   → Voice-to-text: "2711 brian hall drive austin texas"
+   -> Voice-to-text: "2711 brian hall drive austin texas"
 
 2. AI calls POST /validate-address
-   → Gets back: "2711 Bryonhall Drive, Austin, TX 78745" ✓
+   -> Gets back: "2711 Bryonhall Drive, Austin, TX 78745" (USPS-validated)
 
 3. AI calls POST /route with HQ as origin
-   → Gets back: 12.3 miles, 18 minutes
+   -> Gets back: 12.3 miles, 18 minutes
 
 4. Or, AI calls POST /route with driver's current GPS
-   → Gets back: 4.1 miles, 8 minutes (driver is already nearby)
+   -> Gets back: 4.1 miles, 8 minutes (driver is already nearby)
 
 5. AI confirms with customer: "We can have someone there in about 20 minutes"
 ```
@@ -212,3 +212,7 @@ For a plumbing/service dispatch AI:
 - **OSRM demo server** — for production use, consider [self-hosting OSRM](https://github.com/Project-OSRM/osrm-backend) or using a paid routing provider
 - **OpenStreetMap coverage** — depends on community mapping completeness
 - **Very creative misspellings** (3+ simultaneous errors) may not resolve
+
+## License
+
+MIT
